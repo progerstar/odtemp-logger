@@ -1,12 +1,12 @@
 # ODTemp Logger
 
-Temperature monitoring application for USB temperature sensor ODTEMP-1.
+Temperature and humidity monitoring application for USB sensor ODTEMP-1.
 
 [Русский](#русский)
 
 ## Features
 
-- Real-time temperature display with GUI
+- Real-time temperature and humidity display
 - CLI mode for headless systems
 - Automatic device reconnection
 - Logging to file
@@ -14,7 +14,7 @@ Temperature monitoring application for USB temperature sensor ODTEMP-1.
 
 ## Requirements
 
-- USB temperature sensor ODTEMP-1
+- USB temperature/humidity sensor ODTEMP-1
 - Go 1.23+ (for building)
 
 ## Building
@@ -73,11 +73,11 @@ make run
 
 # Русский
 
-Приложение для мониторинга температуры с USB датчика ODTEMP-1.
+Приложение для мониторинга температуры/температуры-влажности с USB датчиков ODTEMP-1.
 
 ## Возможности
 
-- Отображение температуры в реальном времени (GUI)
+- Отображение температуры или температуры-влажности в реальном времени
 - CLI режим для серверов
 - Автоматическое переподключение устройства
 - Логирование в файл
@@ -85,7 +85,7 @@ make run
 
 ## Требования
 
-- USB датчик температуры ODTEMP-1
+- USB датчик ODTEMP-1
 - Go 1.23+ (для сборки)
 
 

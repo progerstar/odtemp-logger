@@ -30,14 +30,16 @@ const (
 	HID_CMD_RST_UAPP = 0xF0
 	HID_CMD_RST_DFU  = 0xF1
 	HID_CMD_RST_STM  = 0xFA
-	VERSION          = "1.3.0"
+	VERSION          = "1.4.0"
 )
 
-// TempSample хранит отсчёт температуры
-type TempSample struct {
-	Value float64
-	At    time.Time
-	Gen   uint64
+// SensorSample хранит отсчёт температуры и влажности
+type SensorSample struct {
+	Temperature float64
+	Humidity    float64
+	HasHumidity bool
+	At          time.Time
+	Gen         uint64
 }
 
 // DeviceState хранит состояние устройства
@@ -172,13 +174,21 @@ func findAndOpenDevice() (*hid.Device, error) {
 	return dev, nil
 }
 
-// processDataReport обрабатывает отчёт с данными
-func processDataReport(data []byte) float64 {
-	if len(data) >= 2 {
-		raw := int16(binary.LittleEndian.Uint16(data[:2]))
-		return float64(raw) / 100.0
+// processDataReport обрабатывает HID отчёт с температурой (и опционально влажностью)
+func processDataReport(data []byte) (float64, float64, bool, bool) {
+	if len(data) < 2 {
+		return 0, 0, false, false
 	}
-	return 0
+
+	rawTemp := int16(binary.LittleEndian.Uint16(data[:2]))
+	temp := float64(rawTemp) / 100.0
+
+	if len(data) >= 4 {
+		rawHumidity := int16(binary.LittleEndian.Uint16(data[2:4]))
+		return temp, float64(rawHumidity) / 100.0, true, true
+	}
+
+	return temp, 0, false, true
 }
 
 // searchDevice ищет устройство с переподключением
@@ -271,17 +281,19 @@ func main() {
 	// Состояние устройства
 	ds := &DeviceState{}
 
-	// Температура
+	// Последние показания
 	var lastTemp float64
+	var lastHumidity float64
+	var lastHasHumidity bool
 	var tempMutex sync.Mutex
 
 	// Периодическое логирование
-	var sampleChan chan TempSample
+	var sampleChan chan SensorSample
 	var logPeriod time.Duration
 
 	if *periodPtr >= 2 {
 		logPeriod = time.Duration(*periodPtr * float64(time.Second))
-		sampleChan = make(chan TempSample, 1)
+		sampleChan = make(chan SensorSample, 1)
 
 		go func() {
 			now := time.Now()
@@ -289,7 +301,7 @@ func main() {
 			timer := time.NewTimer(time.Until(firstTick))
 			defer timer.Stop()
 
-			bySlot := make(map[int64]TempSample)
+			bySlot := make(map[int64]SensorSample)
 
 			for {
 				select {
@@ -304,7 +316,11 @@ func main() {
 					prevEndUnix := tickTime.Truncate(logPeriod).UnixNano()
 					if s, ok := bySlot[prevEndUnix]; ok {
 						if ds.isAlive() && s.Gen == ds.getGeneration() {
-							log.Printf("Температура: %.2f°C\n", s.Value)
+							if s.HasHumidity {
+								log.Printf("Температура: %.2f°C; Влажность: %.2f%%\n", s.Temperature, s.Humidity)
+							} else {
+								log.Printf("Температура: %.2f°C\n", s.Temperature)
+							}
 						}
 						delete(bySlot, prevEndUnix)
 					}
@@ -323,7 +339,7 @@ func main() {
 		if err != nil {
 			log.Printf("Ошибка создания UI: %v, переключение в CLI режим", err)
 			showSystemDialog(
-				"Монитор температуры",
+				"Монитор ODTEMP-1",
 				"Не удалось запустить графический интерфейс.\nПриложение продолжит работу в консольном режиме.\n\nДля выхода нажмите Ctrl+C в терминале.",
 			)
 			guiMode = false
@@ -349,8 +365,10 @@ func main() {
 					if _, found := ds.getDevice(); found {
 						tempMutex.Lock()
 						t := lastTemp
+						h := lastHumidity
+						hasHumidity := lastHasHumidity
 						tempMutex.Unlock()
-						ui.UpdateTemperature(t)
+						ui.UpdateMeasurements(t, h, hasHumidity)
 					}
 				case <-quit:
 					return
@@ -370,11 +388,9 @@ func main() {
 			if *periodPtr < 2 {
 				dev, _ := ds.getDevice()
 				if dev != nil {
-					var intervalMs uint32
-					if *periodPtr <= 0.2 {
-						intervalMs = 200
-					} else {
-						intervalMs = uint32(*periodPtr * 1000)
+					intervalMs := uint32(*periodPtr * 1000)
+					if intervalMs == 0 {
+						intervalMs = 1
 					}
 
 					if err := setDeviceInterval(dev, intervalMs); err != nil {
@@ -431,30 +447,39 @@ func main() {
 							if len(data) < 3 {
 								continue
 							}
-							temp := processDataReport(data[1:])
+							temp, humidity, hasHumidity, ok := processDataReport(data[1:])
+							if !ok {
+								continue
+							}
 
 							nowSample := time.Now()
 							tempMutex.Lock()
 							lastTemp = temp
+							lastHumidity = humidity
+							lastHasHumidity = hasHumidity
 							tempMutex.Unlock()
 
 							if sampleChan != nil {
 								select {
-								case sampleChan <- TempSample{Value: temp, At: nowSample, Gen: ds.getGeneration()}:
+								case sampleChan <- SensorSample{Temperature: temp, Humidity: humidity, HasHumidity: hasHumidity, At: nowSample, Gen: ds.getGeneration()}:
 								default:
 									select {
 									case <-sampleChan:
 									default:
 									}
 									select {
-									case sampleChan <- TempSample{Value: temp, At: nowSample, Gen: ds.getGeneration()}:
+									case sampleChan <- SensorSample{Temperature: temp, Humidity: humidity, HasHumidity: hasHumidity, At: nowSample, Gen: ds.getGeneration()}:
 									default:
 									}
 								}
 							}
 
 							if *periodPtr < 2 {
-								log.Printf("Температура: %.2f°C\n", temp)
+								if hasHumidity {
+									log.Printf("Температура: %.2f°C; Влажность: %.2f%%\n", temp, humidity)
+								} else {
+									log.Printf("Температура: %.2f°C\n", temp)
+								}
 							}
 
 						case HID_EVENT_REPORT_ID:
