@@ -25,10 +25,10 @@ if %errorlevel% neq 0 (
 
 REM Сборка .exe
 echo Сборка бинарника...
-go build -ldflags="-H windowsgui" -o odtemp-logger.exe .
+go build -buildvcs=false -ldflags="-H windowsgui" -o odtemp-logger.exe .
 
 REM Сборка с иконкой через fyne package
-fyne package -os windows -name "%APP_NAME%" -appID "%APP_ID%" -icon Icon.png
+fyne package -os windows -name "%APP_NAME%" --app-id "%APP_ID%" -icon Icon.png
 
 echo.
 echo Готово: odtemp-logger.exe
