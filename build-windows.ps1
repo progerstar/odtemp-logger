@@ -34,7 +34,7 @@ go build -buildvcs=false -ldflags="-H windowsgui" -o "odtemp-logger_${VERSION}_w
 
 # Build package with icon
 Write-Host "Creating package..." -ForegroundColor Green
-fyne package -os windows -name "$APP_NAME" --app-id "$APP_ID" -icon Icon.png
+fyne package -os windows -name "$APP_NAME" --appID "$APP_ID" -icon Icon.png
 
 Write-Host ""
 Write-Host "Done: odtemp-logger_${VERSION}_windows_amd64.exe" -ForegroundColor Green

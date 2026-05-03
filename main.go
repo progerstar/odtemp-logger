@@ -2,10 +2,12 @@ package main
 
 import (
 	"encoding/binary"
+	"errors"
 	"flag"
 	"fmt"
 	"io"
 	"log"
+	"math"
 	"os"
 	"path/filepath"
 	"sync"
@@ -31,6 +33,10 @@ const (
 	HID_CMD_RST_DFU  = 0xF1
 	HID_CMD_RST_STM  = 0xFA
 	VERSION          = "1.4.0"
+
+	readTimeout      = time.Second
+	missedReadLimit  = 9
+	minDeviceDelayMs = 1
 )
 
 // SensorSample хранит отсчёт температуры и влажности
@@ -114,6 +120,51 @@ func getDeviceInterval(dev *hid.Device) (uint32, error) {
 
 	interval := binary.LittleEndian.Uint32(featureBuf[1:5])
 	return interval, nil
+}
+
+func validatePeriod(period float64) (time.Duration, error) {
+	if math.IsNaN(period) || math.IsInf(period, 0) || period <= 0 {
+		return 0, fmt.Errorf("period должен быть положительным числом")
+	}
+
+	const maxDurationSeconds = float64(1<<63-1) / float64(time.Second)
+	if period > maxDurationSeconds {
+		return 0, fmt.Errorf("period слишком большой")
+	}
+
+	duration := time.Duration(period * float64(time.Second))
+	if duration <= 0 {
+		return 0, fmt.Errorf("period меньше минимальной точности таймера")
+	}
+
+	return duration, nil
+}
+
+func deviceIntervalMilliseconds(period float64) uint32 {
+	intervalMs := uint32(period * 1000)
+	if intervalMs == 0 {
+		return minDeviceDelayMs
+	}
+	return intervalMs
+}
+
+func configureFastDeviceInterval(ds *DeviceState, period float64) {
+	if period >= 2 {
+		return
+	}
+
+	dev, _ := ds.getDevice()
+	if dev == nil {
+		return
+	}
+
+	intervalMs := deviceIntervalMilliseconds(period)
+	if err := setDeviceInterval(dev, intervalMs); err != nil {
+		log.Println(err)
+	}
+	if interval, err := getDeviceInterval(dev); err == nil {
+		log.Printf("Полученный интервал: %d ms\n", interval)
+	}
 }
 
 // sendBootloaderCommand отправляет команду перехода в загрузчик и сразу закрывает устройство
@@ -244,11 +295,19 @@ func main() {
 		return
 	}
 
+	period, err := validatePeriod(*periodPtr)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "Ошибка: %v\n", err)
+		os.Exit(2)
+	}
+
 	// Режим работы (GUI или CLI)
 	guiMode := !*cliPtr
 
 	// Настройка логирования
-	if !*silentPtr {
+	if *silentPtr {
+		log.SetOutput(io.Discard)
+	} else {
 		now := time.Now()
 		logFileName := fmt.Sprintf("odtemp_%s.log", now.Format("02.01.2006_15.04.05"))
 
@@ -285,17 +344,22 @@ func main() {
 	var lastTemp float64
 	var lastHumidity float64
 	var lastHasHumidity bool
+	var lastGen uint64
+	var hasLastSample bool
 	var tempMutex sync.Mutex
 
 	// Периодическое логирование
 	var sampleChan chan SensorSample
-	var logPeriod time.Duration
+	var wg sync.WaitGroup
 
 	if *periodPtr >= 2 {
-		logPeriod = time.Duration(*periodPtr * float64(time.Second))
+		logPeriod := period
 		sampleChan = make(chan SensorSample, 1)
 
+		wg.Add(1)
 		go func() {
+			defer wg.Done()
+
 			now := time.Now()
 			firstTick := now.Truncate(logPeriod).Add(logPeriod)
 			timer := time.NewTimer(time.Until(firstTick))
@@ -355,7 +419,10 @@ func main() {
 
 	// Горутина обновления UI
 	if guiMode && ui != nil {
+		wg.Add(1)
 		go func() {
+			defer wg.Done()
+
 			uiTicker := time.NewTicker(200 * time.Millisecond)
 			defer uiTicker.Stop()
 
@@ -367,8 +434,14 @@ func main() {
 						t := lastTemp
 						h := lastHumidity
 						hasHumidity := lastHasHumidity
+						gen := lastGen
+						hasSample := hasLastSample
 						tempMutex.Unlock()
-						ui.UpdateMeasurements(t, h, hasHumidity)
+						if hasSample && gen == ds.getGeneration() {
+							ui.UpdateMeasurements(t, h, hasHumidity)
+						} else {
+							ui.ShowWaiting()
+						}
 					}
 				case <-quit:
 					return
@@ -378,32 +451,36 @@ func main() {
 	}
 
 	// Горутина чтения данных
+	wg.Add(1)
 	go func() {
+		defer wg.Done()
+
 		select {
 		case <-deviceFoundChan:
 			log.Println("Запуск цикла чтения данных с устройства")
 			time.Sleep(500 * time.Millisecond)
 
-			// Настройка интервала устройства при быстром периоде
-			if *periodPtr < 2 {
-				dev, _ := ds.getDevice()
-				if dev != nil {
-					intervalMs := uint32(*periodPtr * 1000)
-					if intervalMs == 0 {
-						intervalMs = 1
-					}
+			configureFastDeviceInterval(ds, *periodPtr)
 
-					if err := setDeviceInterval(dev, intervalMs); err != nil {
-						log.Println(err)
-					}
-					if interval, err := getDeviceInterval(dev); err == nil {
-						log.Printf("Полученный интервал: %d ms\n", interval)
-					}
+			replyTimeout := missedReadLimit
+			report := make([]byte, 64)
+
+			reconnect := func(showStatus func()) bool {
+				if showStatus != nil {
+					showStatus()
+				}
+				deviceFoundChan = searchDevice(ds, quit, *silentPtr)
+
+				select {
+				case <-deviceFoundChan:
+					time.Sleep(500 * time.Millisecond)
+					configureFastDeviceInterval(ds, *periodPtr)
+					replyTimeout = missedReadLimit
+					return true
+				case <-quit:
+					return false
 				}
 			}
-
-			replyTimeout := 9
-			report := make([]byte, 64)
 
 			for {
 				select {
@@ -416,22 +493,18 @@ func main() {
 						continue
 					}
 
-					n, err := dev.Read(report)
-					if err != nil {
+					n, err := dev.ReadWithTimeout(report, readTimeout)
+					if errors.Is(err, hid.ErrTimeout) {
+						n = 0
+					} else if err != nil {
 						log.Printf("Ошибка чтения: %v\n", err)
 						ds.clearDevice()
 
 						if guiMode && ui != nil {
-							ui.ShowDisconnected()
-							deviceFoundChan = searchDevice(ds, quit, *silentPtr)
-
-							select {
-							case <-deviceFoundChan:
-								time.Sleep(500 * time.Millisecond)
+							if reconnect(ui.ShowDisconnected) {
 								continue
-							case <-quit:
-								return
 							}
+							return
 						} else {
 							closeQuit()
 							return
@@ -457,18 +530,21 @@ func main() {
 							lastTemp = temp
 							lastHumidity = humidity
 							lastHasHumidity = hasHumidity
+							lastGen = ds.getGeneration()
+							hasLastSample = true
 							tempMutex.Unlock()
 
 							if sampleChan != nil {
+								gen := ds.getGeneration()
 								select {
-								case sampleChan <- SensorSample{Temperature: temp, Humidity: humidity, HasHumidity: hasHumidity, At: nowSample, Gen: ds.getGeneration()}:
+								case sampleChan <- SensorSample{Temperature: temp, Humidity: humidity, HasHumidity: hasHumidity, At: nowSample, Gen: gen}:
 								default:
 									select {
 									case <-sampleChan:
 									default:
 									}
 									select {
-									case sampleChan <- SensorSample{Temperature: temp, Humidity: humidity, HasHumidity: hasHumidity, At: nowSample, Gen: ds.getGeneration()}:
+									case sampleChan <- SensorSample{Temperature: temp, Humidity: humidity, HasHumidity: hasHumidity, At: nowSample, Gen: gen}:
 									default:
 									}
 								}
@@ -505,6 +581,10 @@ func main() {
 										closeQuit()
 										return
 									}
+									if reconnect(ui.ShowDisconnected) {
+										continue
+									}
+									return
 								} else {
 									log.Printf("Получена команда 0x%X с данными: %X\n", cmd, data[2:])
 								}
@@ -514,7 +594,7 @@ func main() {
 							log.Printf("Неизвестный report id: %d\n", reportID)
 						}
 
-						replyTimeout = 9
+						replyTimeout = missedReadLimit
 					} else {
 						if replyTimeout > 0 {
 							replyTimeout--
@@ -523,17 +603,10 @@ func main() {
 							ds.clearDevice()
 
 							if guiMode && ui != nil {
-								ui.ShowConnectionLost()
-								deviceFoundChan = searchDevice(ds, quit, *silentPtr)
-
-								select {
-								case <-deviceFoundChan:
-									time.Sleep(500 * time.Millisecond)
-									replyTimeout = 9
+								if reconnect(ui.ShowConnectionLost) {
 									continue
-								case <-quit:
-									return
 								}
+								return
 							} else {
 								closeQuit()
 								return
@@ -553,6 +626,9 @@ func main() {
 	} else {
 		<-quit
 	}
+
+	closeQuit()
+	wg.Wait()
 
 	// Очистка
 	ds.clearDevice()

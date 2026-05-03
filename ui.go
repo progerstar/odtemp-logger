@@ -19,6 +19,10 @@ type UI struct {
 	humidityText *canvas.Text
 }
 
+func (u *UI) runOnUI(fn func()) {
+	fyne.Do(fn)
+}
+
 // NewUI создает новый графический интерфейс
 // Возвращает nil и ошибку если GUI недоступен (нет драйверов/дисплея)
 func NewUI() (ui *UI, err error) {
@@ -65,46 +69,66 @@ func (u *UI) SetOnClosed(callback func()) {
 
 // UpdateMeasurements обновляет отображение температуры и (опционально) влажности
 func (u *UI) UpdateMeasurements(temp float64, humidity float64, hasHumidity bool) {
-	u.tempText.Text = fmt.Sprintf("%.1f°C", temp)
-	u.tempText.TextSize = 62
-	u.tempText.Color = theme.ForegroundColor()
-	u.tempText.Refresh()
+	u.runOnUI(func() {
+		u.tempText.Text = fmt.Sprintf("%.1f°C", temp)
+		u.tempText.TextSize = 62
+		u.tempText.Color = theme.ForegroundColor()
+		u.tempText.Refresh()
 
-	if hasHumidity {
-		u.humidityText.Text = fmt.Sprintf("%.1f%%", humidity)
-		u.humidityText.TextSize = 50
-		u.humidityText.Color = theme.ForegroundColor()
-		u.humidityText.Show()
-	} else {
+		if hasHumidity {
+			u.humidityText.Text = fmt.Sprintf("%.1f%%", humidity)
+			u.humidityText.TextSize = 50
+			u.humidityText.Color = theme.ForegroundColor()
+			u.humidityText.Show()
+		} else {
+			u.humidityText.Hide()
+		}
+		u.humidityText.Refresh()
+	})
+}
+
+// ShowWaiting показывает статус ожидания первого отчёта после подключения
+func (u *UI) ShowWaiting() {
+	u.runOnUI(func() {
+		u.tempText.Text = "Ожидание данных..."
+		u.tempText.TextSize = 36
+		u.tempText.Color = theme.ForegroundColor()
+		u.tempText.Refresh()
+
+		u.humidityText.Text = ""
 		u.humidityText.Hide()
-	}
-	u.humidityText.Refresh()
+		u.humidityText.Refresh()
+	})
 }
 
 // ShowDisconnected показывает статус отключения
 func (u *UI) ShowDisconnected() {
-	u.tempText.Text = "Устройство отключено!"
-	u.tempText.TextSize = 36
-	u.tempText.Color = theme.ErrorColor()
-	u.tempText.Refresh()
+	u.runOnUI(func() {
+		u.tempText.Text = "Устройство отключено!"
+		u.tempText.TextSize = 36
+		u.tempText.Color = theme.ErrorColor()
+		u.tempText.Refresh()
 
-	u.humidityText.Text = ""
-	u.humidityText.Hide()
-	u.humidityText.Refresh()
+		u.humidityText.Text = ""
+		u.humidityText.Hide()
+		u.humidityText.Refresh()
+	})
 }
 
 // ShowConnectionLost показывает статус потери связи
 func (u *UI) ShowConnectionLost() {
-	u.tempText.Text = "Потеряна связь!"
-	u.tempText.TextSize = 36
-	u.tempText.Color = theme.ErrorColor()
-	u.tempText.Refresh()
+	u.runOnUI(func() {
+		u.tempText.Text = "Потеряна связь!"
+		u.tempText.TextSize = 36
+		u.tempText.Color = theme.ErrorColor()
+		u.tempText.Refresh()
 
-	u.humidityText.Text = "Поиск..."
-	u.humidityText.TextSize = 32
-	u.humidityText.Color = theme.ErrorColor()
-	u.humidityText.Show()
-	u.humidityText.Refresh()
+		u.humidityText.Text = "Поиск..."
+		u.humidityText.TextSize = 32
+		u.humidityText.Color = theme.ErrorColor()
+		u.humidityText.Show()
+		u.humidityText.Refresh()
+	})
 }
 
 // Run запускает главный цикл приложения
