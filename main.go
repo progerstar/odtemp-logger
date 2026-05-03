@@ -32,7 +32,7 @@ const (
 	HID_CMD_RST_UAPP = 0xF0
 	HID_CMD_RST_DFU  = 0xF1
 	HID_CMD_RST_STM  = 0xFA
-	VERSION          = "1.4.0"
+	VERSION          = "1.4.1"
 
 	readTimeout      = time.Second
 	missedReadLimit  = 9
