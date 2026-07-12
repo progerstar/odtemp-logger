@@ -30,6 +30,10 @@ make package
 
 # Run without building
 make run
+
+# CLI-only build (nogui tag): no Fyne/OpenGL/X11 dependencies,
+# suitable for headless servers; always runs in console mode
+make cli
 ```
 
 ## Usage
@@ -54,7 +58,13 @@ make run
 | `-path <dir>` | Log file directory |
 | `-silent` | Disable logging |
 | `-period <sec>` | Log interval in seconds (default: 60) |
+| `-cloud-token <write_token>` | Enable cloud-lite upload with write token |
+| `-cloud-period <sec>` | Cloud upload interval in seconds (default: 60) |
+| `-cloud-url <url>` | cloud-lite base URL (default: `https://cloud.unitx.pro`) |
+| `-cloud-device <id>` | cloud-lite device_id (default: `odtemp-1`) |
 | `-bootloader` | Switch device to bootloader mode and exit |
+
+Cloud options can also be provided through the environment variables `ODTEMP_CLOUD_TOKEN`, `ODTEMP_CLOUD_PERIOD`, `ODTEMP_CLOUD_URL`, and `ODTEMP_CLOUD_DEVICE` (flags take precedence). Prefer `ODTEMP_CLOUD_TOKEN` over `-cloud-token`: command line arguments are visible to other users via `ps`.
 
 ### Examples
 
@@ -67,6 +77,9 @@ make run
 
 # Silent mode (no log file)
 ./odtemp-logger -silent
+
+# Upload readings to cloud-lite every 60 seconds
+ODTEMP_CLOUD_TOKEN=utx1_... ./odtemp-logger -cli -cloud-period 60 -cloud-device room_01
 ```
 
 ---
@@ -100,6 +113,10 @@ make package
 
 # Запустить без сборки
 make run
+
+# CLI-сборка (тег nogui): без зависимостей Fyne/OpenGL/X11,
+# подходит для headless-серверов; всегда работает в консольном режиме
+make cli
 ```
 
 ## Использование
@@ -124,7 +141,13 @@ make run
 | `-path <dir>` | Директория для лог-файлов |
 | `-silent` | Отключить логирование |
 | `-period <сек>` | Интервал записи в секундах (по умолчанию: 60) |
+| `-cloud-token <write_token>` | Включить отправку в cloud-lite с write-токеном |
+| `-cloud-period <сек>` | Интервал отправки в cloud-lite в секундах (по умолчанию: 60) |
+| `-cloud-url <url>` | Base URL cloud-lite (по умолчанию: `https://cloud.unitx.pro`) |
+| `-cloud-device <id>` | device_id в cloud-lite (по умолчанию: `odtemp-1`) |
 | `-bootloader` | Перевести устройство в загрузчик и выйти |
+
+Cloud-параметры также можно задать через переменные окружения `ODTEMP_CLOUD_TOKEN`, `ODTEMP_CLOUD_PERIOD`, `ODTEMP_CLOUD_URL` и `ODTEMP_CLOUD_DEVICE` (флаги имеют приоритет). Токен лучше передавать через `ODTEMP_CLOUD_TOKEN`, а не `-cloud-token`: аргументы командной строки видны другим пользователям через `ps`.
 
 ### Примеры
 
@@ -137,4 +160,7 @@ make run
 
 # Без логирования
 ./odtemp-logger -silent
+
+# Отправка показаний в cloud-lite каждые 60 секунд
+ODTEMP_CLOUD_TOKEN=utx1_... ./odtemp-logger -cli -cloud-period 60 -cloud-device room_01
 ```

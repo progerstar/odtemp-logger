@@ -1,3 +1,5 @@
+//go:build !nogui
+
 package main
 
 import (
@@ -11,7 +13,8 @@ import (
 	"fyne.io/fyne/v2/theme"
 )
 
-// UI содержит компоненты графического интерфейса
+const guiSupported = true
+
 type UI struct {
 	app          fyne.App
 	window       fyne.Window
@@ -23,10 +26,7 @@ func (u *UI) runOnUI(fn func()) {
 	fyne.Do(fn)
 }
 
-// NewUI создает новый графический интерфейс
-// Возвращает nil и ошибку если GUI недоступен (нет драйверов/дисплея)
 func NewUI() (ui *UI, err error) {
-	// Перехватываем панику от fyne если нет драйверов/дисплея
 	defer func() {
 		if r := recover(); r != nil {
 			ui = nil
@@ -62,12 +62,10 @@ func NewUI() (ui *UI, err error) {
 	}, nil
 }
 
-// SetOnClosed устанавливает обработчик закрытия окна
 func (u *UI) SetOnClosed(callback func()) {
 	u.window.SetOnClosed(callback)
 }
 
-// UpdateMeasurements обновляет отображение температуры и (опционально) влажности
 func (u *UI) UpdateMeasurements(temp float64, humidity float64, hasHumidity bool) {
 	u.runOnUI(func() {
 		u.tempText.Text = fmt.Sprintf("%.1f°C", temp)
@@ -87,7 +85,6 @@ func (u *UI) UpdateMeasurements(temp float64, humidity float64, hasHumidity bool
 	})
 }
 
-// ShowWaiting показывает статус ожидания первого отчёта после подключения
 func (u *UI) ShowWaiting() {
 	u.runOnUI(func() {
 		u.tempText.Text = "Ожидание данных..."
@@ -101,7 +98,6 @@ func (u *UI) ShowWaiting() {
 	})
 }
 
-// ShowDisconnected показывает статус отключения
 func (u *UI) ShowDisconnected() {
 	u.runOnUI(func() {
 		u.tempText.Text = "Устройство отключено!"
@@ -115,7 +111,6 @@ func (u *UI) ShowDisconnected() {
 	})
 }
 
-// ShowConnectionLost показывает статус потери связи
 func (u *UI) ShowConnectionLost() {
 	u.runOnUI(func() {
 		u.tempText.Text = "Потеряна связь!"
@@ -131,7 +126,6 @@ func (u *UI) ShowConnectionLost() {
 	})
 }
 
-// Run запускает главный цикл приложения
 func (u *UI) Run() {
 	u.app.Run()
 }

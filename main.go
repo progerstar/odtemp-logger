@@ -10,6 +10,7 @@ import (
 	"math"
 	"os"
 	"path/filepath"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -17,7 +18,6 @@ import (
 	"github.com/sstallion/go-hid"
 )
 
-// Константы устройства
 const (
 	OD_VID     = 0x0483
 	OD_IOT_PID = 0xA26A
@@ -32,14 +32,14 @@ const (
 	HID_CMD_RST_UAPP = 0xF0
 	HID_CMD_RST_DFU  = 0xF1
 	HID_CMD_RST_STM  = 0xFA
-	VERSION          = "1.4.1"
+	VERSION          = "1.5.1"
 
 	readTimeout      = time.Second
 	missedReadLimit  = 9
 	minDeviceDelayMs = 1
 )
 
-// SensorSample хранит отсчёт температуры и влажности
+
 type SensorSample struct {
 	Temperature float64
 	Humidity    float64
@@ -48,7 +48,6 @@ type SensorSample struct {
 	Gen         uint64
 }
 
-// DeviceState хранит состояние устройства
 type DeviceState struct {
 	dev                  *hid.Device
 	found                bool
@@ -167,7 +166,72 @@ func configureFastDeviceInterval(ds *DeviceState, period float64) {
 	}
 }
 
-// sendBootloaderCommand отправляет команду перехода в загрузчик и сразу закрывает устройство
+func logSensorSample(sample SensorSample) {
+	if sample.HasHumidity {
+		log.Printf("Температура: %.2f°C; Влажность: %.2f%%\n", sample.Temperature, sample.Humidity)
+	} else {
+		log.Printf("Температура: %.2f°C\n", sample.Temperature)
+	}
+}
+
+func offerSample(ch chan SensorSample, sample SensorSample) {
+	select {
+	case ch <- sample:
+	default:
+		select {
+		case <-ch:
+		default:
+		}
+		select {
+		case ch <- sample:
+		default:
+		}
+	}
+}
+
+func startPeriodicSampleRecorder(quit <-chan struct{}, ds *DeviceState, period time.Duration, record func(SensorSample)) chan SensorSample {
+	sampleChan := make(chan SensorSample, 1)
+
+	go func() {
+		now := time.Now()
+		firstTick := now.Truncate(period).Add(period)
+		timer := time.NewTimer(time.Until(firstTick))
+		defer timer.Stop()
+
+		bySlot := make(map[int64]SensorSample)
+
+		for {
+			select {
+			case <-quit:
+				return
+			case s := <-sampleChan:
+				if ds.isAlive() && s.Gen == ds.getGeneration() {
+					slotEnd := s.At.Truncate(period).Add(period)
+					bySlot[slotEnd.UnixNano()] = s
+				}
+			case tickTime := <-timer.C:
+				prevEndUnix := tickTime.Truncate(period).UnixNano()
+				if s, ok := bySlot[prevEndUnix]; ok {
+					if ds.isAlive() && s.Gen == ds.getGeneration() {
+						record(s)
+					}
+				}
+				// Удаляем и пропущенные слоты: если record() блокировался
+				// дольше периода, их тики уже не наступят
+				for slotEnd := range bySlot {
+					if slotEnd <= prevEndUnix {
+						delete(bySlot, slotEnd)
+					}
+				}
+				next := tickTime.Add(period)
+				timer.Reset(time.Until(next))
+			}
+		}
+	}()
+
+	return sampleChan
+}
+
 func sendBootloaderCommand() error {
 	dev, err := findAndOpenDevice()
 	if err != nil {
@@ -190,7 +254,6 @@ func sendBootloaderCommand() error {
 	return nil
 }
 
-// findAndOpenDevice выполняет поиск и открытие первого доступного устройства
 func findAndOpenDevice() (*hid.Device, error) {
 	if err := hid.Init(); err != nil {
 		return nil, fmt.Errorf("ошибка инициализации HID: %v", err)
@@ -225,7 +288,6 @@ func findAndOpenDevice() (*hid.Device, error) {
 	return dev, nil
 }
 
-// processDataReport обрабатывает HID отчёт с температурой (и опционально влажностью)
 func processDataReport(data []byte) (float64, float64, bool, bool) {
 	if len(data) < 2 {
 		return 0, 0, false, false
@@ -242,7 +304,6 @@ func processDataReport(data []byte) (float64, float64, bool, bool) {
 	return temp, 0, false, true
 }
 
-// searchDevice ищет устройство с переподключением
 func searchDevice(ds *DeviceState, quit <-chan struct{}, silent bool) <-chan struct{} {
 	foundChan := make(chan struct{})
 
@@ -273,11 +334,14 @@ func searchDevice(ds *DeviceState, quit <-chan struct{}, silent bool) <-chan str
 }
 
 func main() {
-	// Парсинг параметров командной строки
 	cliPtr := flag.Bool("cli", false, "запуск без GUI")
 	pathPtr := flag.String("path", "", "переопределяет путь записи лога")
 	silentPtr := flag.Bool("silent", false, "не писать лог")
 	periodPtr := flag.Float64("period", 60, "период записи в секундах")
+	cloudTokenPtr := flag.String("cloud-token", "", "write_token для записи показаний в cloud-lite (или env ODTEMP_CLOUD_TOKEN)")
+	cloudPeriodPtr := flag.Float64("cloud-period", 60, "период записи показаний в cloud-lite в секундах (или env ODTEMP_CLOUD_PERIOD)")
+	cloudURLPtr := flag.String("cloud-url", defaultCloudBaseURL, "base URL cloud-lite (или env ODTEMP_CLOUD_URL)")
+	cloudDevicePtr := flag.String("cloud-device", defaultCloudDeviceID, "device_id для cloud-lite (или env ODTEMP_CLOUD_DEVICE)")
 	bootloaderPtr := flag.Bool("bootloader", false, "перевести устройство в загрузчик и выйти")
 
 	flag.Usage = func() {
@@ -287,7 +351,6 @@ func main() {
 	}
 	flag.Parse()
 
-	// Режим bootloader - отправить команду и выйти
 	if *bootloaderPtr {
 		if err := sendBootloaderCommand(); err != nil {
 			log.Fatalf("Ошибка: %v", err)
@@ -301,10 +364,57 @@ func main() {
 		os.Exit(2)
 	}
 
-	// Режим работы (GUI или CLI)
-	guiMode := !*cliPtr
+	setFlags := make(map[string]bool)
+	flag.Visit(func(f *flag.Flag) { setFlags[f.Name] = true })
 
-	// Настройка логирования
+	cloudWriteToken := strings.TrimSpace(*cloudTokenPtr)
+	if !setFlags["cloud-token"] {
+		cloudWriteToken = strings.TrimSpace(os.Getenv("ODTEMP_CLOUD_TOKEN"))
+	}
+	cloudURL := strings.TrimSpace(*cloudURLPtr)
+	if !setFlags["cloud-url"] {
+		cloudURL = envOrDefault("ODTEMP_CLOUD_URL", cloudURL)
+	}
+	cloudDevice := strings.TrimSpace(*cloudDevicePtr)
+	if !setFlags["cloud-device"] {
+		cloudDevice = envOrDefault("ODTEMP_CLOUD_DEVICE", cloudDevice)
+	}
+	cloudPeriodSeconds := *cloudPeriodPtr
+	if !setFlags["cloud-period"] {
+		cloudPeriodSeconds, err = envFloat64("ODTEMP_CLOUD_PERIOD", cloudPeriodSeconds)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "Ошибка: %v\n", err)
+			os.Exit(2)
+		}
+	}
+
+	var cloudClient *CloudClient
+	var cloudPeriod time.Duration
+	if cloudWriteToken != "" {
+		cloudPeriod, err = validatePeriod(cloudPeriodSeconds)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "Ошибка cloud-period: %v\n", err)
+			os.Exit(2)
+		}
+
+		cloudClient, err = NewCloudClient(CloudConfig{
+			BaseURL:    cloudURL,
+			DeviceID:   cloudDevice,
+			WriteToken: cloudWriteToken,
+		})
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "Ошибка cloud-настроек: %v\n", err)
+			os.Exit(2)
+		}
+	}
+
+	devicePeriod := *periodPtr
+	if cloudClient != nil && cloudPeriodSeconds < devicePeriod {
+		devicePeriod = cloudPeriodSeconds
+	}
+
+	guiMode := !*cliPtr && guiSupported
+
 	if *silentPtr {
 		log.SetOutput(io.Discard)
 	} else {
@@ -329,18 +439,24 @@ func main() {
 	}
 
 	log.Printf("Период записи: %.1f секунд\n", *periodPtr)
+	if !*cliPtr && !guiSupported {
+		log.Println("Сборка без GUI: работа в консольном режиме")
+	}
+	if cloudClient != nil {
+		log.Printf("Cloud-lite запись включена: URL %s, device_id %s, период %.1f секунд\n", strings.TrimRight(cloudURL, "/"), cloudDevice, cloudPeriodSeconds)
+		if cloudPeriod < defaultCloudTimeout {
+			log.Printf("Предупреждение: cloud-period (%.1f с) меньше таймаута запроса (%.0f с); при недоступности сервера отправки могут не успевать\n", cloudPeriodSeconds, defaultCloudTimeout.Seconds())
+		}
+	}
 
-	// Каналы управления
 	quit := make(chan struct{})
 	var closeOnce sync.Once
 	closeQuit := func() {
 		closeOnce.Do(func() { close(quit) })
 	}
 
-	// Состояние устройства
 	ds := &DeviceState{}
 
-	// Последние показания
 	var lastTemp float64
 	var lastHumidity float64
 	var lastHasHumidity bool
@@ -348,54 +464,22 @@ func main() {
 	var hasLastSample bool
 	var tempMutex sync.Mutex
 
-	// Периодическое логирование
-	var sampleChan chan SensorSample
+	var sampleChans []chan SensorSample
 	var wg sync.WaitGroup
 
 	if *periodPtr >= 2 {
 		logPeriod := period
-		sampleChan = make(chan SensorSample, 1)
-
-		wg.Add(1)
-		go func() {
-			defer wg.Done()
-
-			now := time.Now()
-			firstTick := now.Truncate(logPeriod).Add(logPeriod)
-			timer := time.NewTimer(time.Until(firstTick))
-			defer timer.Stop()
-
-			bySlot := make(map[int64]SensorSample)
-
-			for {
-				select {
-				case <-quit:
-					return
-				case s := <-sampleChan:
-					if ds.isAlive() && s.Gen == ds.getGeneration() {
-						slotEnd := s.At.Truncate(logPeriod).Add(logPeriod)
-						bySlot[slotEnd.UnixNano()] = s
-					}
-				case tickTime := <-timer.C:
-					prevEndUnix := tickTime.Truncate(logPeriod).UnixNano()
-					if s, ok := bySlot[prevEndUnix]; ok {
-						if ds.isAlive() && s.Gen == ds.getGeneration() {
-							if s.HasHumidity {
-								log.Printf("Температура: %.2f°C; Влажность: %.2f%%\n", s.Temperature, s.Humidity)
-							} else {
-								log.Printf("Температура: %.2f°C\n", s.Temperature)
-							}
-						}
-						delete(bySlot, prevEndUnix)
-					}
-					next := tickTime.Add(logPeriod)
-					timer.Reset(time.Until(next))
-				}
-			}
-		}()
+		sampleChans = append(sampleChans, startPeriodicSampleRecorder(quit, ds, logPeriod, logSensorSample))
 	}
 
-	// Инициализация UI (только в GUI режиме)
+	if cloudClient != nil {
+		sampleChans = append(sampleChans, startPeriodicSampleRecorder(quit, ds, cloudPeriod, func(sample SensorSample) {
+			if err := cloudClient.PostSampleWithTimeout(sample); err != nil {
+				log.Printf("Ошибка записи в cloud-lite: %v\n", err)
+			}
+		}))
+	}
+
 	var ui *UI
 	if guiMode {
 		var err error
@@ -414,10 +498,8 @@ func main() {
 		}
 	}
 
-	// Поиск устройства
 	deviceFoundChan := searchDevice(ds, quit, *silentPtr)
 
-	// Горутина обновления UI
 	if guiMode && ui != nil {
 		wg.Add(1)
 		go func() {
@@ -450,7 +532,6 @@ func main() {
 		}()
 	}
 
-	// Горутина чтения данных
 	wg.Add(1)
 	go func() {
 		defer wg.Done()
@@ -460,7 +541,7 @@ func main() {
 			log.Println("Запуск цикла чтения данных с устройства")
 			time.Sleep(500 * time.Millisecond)
 
-			configureFastDeviceInterval(ds, *periodPtr)
+			configureFastDeviceInterval(ds, devicePeriod)
 
 			replyTimeout := missedReadLimit
 			report := make([]byte, 64)
@@ -474,7 +555,7 @@ func main() {
 				select {
 				case <-deviceFoundChan:
 					time.Sleep(500 * time.Millisecond)
-					configureFastDeviceInterval(ds, *periodPtr)
+					configureFastDeviceInterval(ds, devicePeriod)
 					replyTimeout = missedReadLimit
 					return true
 				case <-quit:
@@ -500,15 +581,14 @@ func main() {
 						log.Printf("Ошибка чтения: %v\n", err)
 						ds.clearDevice()
 
+						var showStatus func()
 						if guiMode && ui != nil {
-							if reconnect(ui.ShowDisconnected) {
-								continue
-							}
-							return
-						} else {
-							closeQuit()
-							return
+							showStatus = ui.ShowDisconnected
 						}
+						if reconnect(showStatus) {
+							continue
+						}
+						return
 					}
 
 					if n > 0 {
@@ -534,32 +614,22 @@ func main() {
 							hasLastSample = true
 							tempMutex.Unlock()
 
-							if sampleChan != nil {
-								gen := ds.getGeneration()
-								select {
-								case sampleChan <- SensorSample{Temperature: temp, Humidity: humidity, HasHumidity: hasHumidity, At: nowSample, Gen: gen}:
-								default:
-									select {
-									case <-sampleChan:
-									default:
-									}
-									select {
-									case sampleChan <- SensorSample{Temperature: temp, Humidity: humidity, HasHumidity: hasHumidity, At: nowSample, Gen: gen}:
-									default:
-									}
-								}
+							sample := SensorSample{
+								Temperature: temp,
+								Humidity:    humidity,
+								HasHumidity: hasHumidity,
+								At:          nowSample,
+								Gen:         ds.getGeneration(),
+							}
+							for _, sampleChan := range sampleChans {
+								offerSample(sampleChan, sample)
 							}
 
 							if *periodPtr < 2 {
-								if hasHumidity {
-									log.Printf("Температура: %.2f°C; Влажность: %.2f%%\n", temp, humidity)
-								} else {
-									log.Printf("Температура: %.2f°C\n", temp)
-								}
+								logSensorSample(sample)
 							}
 
 						case HID_EVENT_REPORT_ID:
-							// Событие сенсора - обрабатывается молча
 
 						case HID_FW_REPORT_ID:
 							if len(data) > 2 {
@@ -602,15 +672,14 @@ func main() {
 							log.Println("Устройство не отвечает – превышен таймаут")
 							ds.clearDevice()
 
+							var showStatus func()
 							if guiMode && ui != nil {
-								if reconnect(ui.ShowConnectionLost) {
-									continue
-								}
-								return
-							} else {
-								closeQuit()
-								return
+								showStatus = ui.ShowConnectionLost
 							}
+							if reconnect(showStatus) {
+								continue
+							}
+							return
 						}
 					}
 				}
@@ -620,7 +689,6 @@ func main() {
 		}
 	}()
 
-	// Основной цикл
 	if guiMode && ui != nil {
 		ui.Run()
 	} else {
@@ -630,7 +698,6 @@ func main() {
 	closeQuit()
 	wg.Wait()
 
-	// Очистка
 	ds.clearDevice()
 	hid.Exit()
 	log.Println("Приложение закрыто")
