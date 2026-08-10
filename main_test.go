@@ -70,10 +70,12 @@ func TestValidatePeriod(t *testing.T) {
 	}{
 		{name: "normal", period: 60, want: time.Minute},
 		{name: "subsecond", period: 0.2, want: 200 * time.Millisecond},
+		{name: "minimum", period: 0.001, want: time.Millisecond},
 		{name: "zero", period: 0, wantErr: true},
 		{name: "negative", period: -1, wantErr: true},
 		{name: "nan", period: math.NaN(), wantErr: true},
 		{name: "infinity", period: math.Inf(1), wantErr: true},
+		{name: "below device resolution", period: 0.000999, wantErr: true},
 		{name: "below timer precision", period: 1e-12, wantErr: true},
 	}
 
@@ -93,6 +95,54 @@ func TestValidatePeriod(t *testing.T) {
 				t.Fatalf("duration = %v, want %v", got, tt.want)
 			}
 		})
+	}
+}
+
+func TestDeviceSamplePeriod(t *testing.T) {
+	tests := []struct {
+		name         string
+		logPeriod    time.Duration
+		cloudPeriod  time.Duration
+		cloudEnabled bool
+		want         time.Duration
+	}{
+		{
+			name:      "local only",
+			logPeriod: 1500 * time.Millisecond,
+			want:      1500 * time.Millisecond,
+		},
+		{
+			name:         "slower cloud",
+			logPeriod:    1500 * time.Millisecond,
+			cloudPeriod:  2 * time.Second,
+			cloudEnabled: true,
+			want:         1500 * time.Millisecond,
+		},
+		{
+			name:         "faster cloud",
+			logPeriod:    1500 * time.Millisecond,
+			cloudPeriod:  200 * time.Millisecond,
+			cloudEnabled: true,
+			want:         200 * time.Millisecond,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := deviceSamplePeriod(tt.logPeriod, tt.cloudPeriod, tt.cloudEnabled)
+			if got != tt.want {
+				t.Fatalf("deviceSamplePeriod() = %v, want %v", got, tt.want)
+			}
+		})
+	}
+}
+
+func TestSearchDeviceStopsWhenAlreadyCanceled(t *testing.T) {
+	quit := make(chan struct{})
+	close(quit)
+
+	if searchDevice(&DeviceState{}, quit, true) {
+		t.Fatal("searchDevice returned success after cancellation")
 	}
 }
 

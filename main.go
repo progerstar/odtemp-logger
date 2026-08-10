@@ -37,8 +37,8 @@ const (
 	readTimeout      = time.Second
 	missedReadLimit  = 9
 	minDeviceDelayMs = 1
+	minSamplePeriod  = time.Millisecond
 )
-
 
 type SensorSample struct {
 	Temperature float64
@@ -132,8 +132,8 @@ func validatePeriod(period float64) (time.Duration, error) {
 	}
 
 	duration := time.Duration(period * float64(time.Second))
-	if duration <= 0 {
-		return 0, fmt.Errorf("period меньше минимальной точности таймера")
+	if duration < minSamplePeriod {
+		return 0, fmt.Errorf("period должен быть не меньше %.3f секунды", minSamplePeriod.Seconds())
 	}
 
 	return duration, nil
@@ -145,6 +145,13 @@ func deviceIntervalMilliseconds(period float64) uint32 {
 		return minDeviceDelayMs
 	}
 	return intervalMs
+}
+
+func deviceSamplePeriod(logPeriod, cloudPeriod time.Duration, cloudEnabled bool) time.Duration {
+	if cloudEnabled && cloudPeriod < logPeriod {
+		return cloudPeriod
+	}
+	return logPeriod
 }
 
 func configureFastDeviceInterval(ds *DeviceState, period float64) {
@@ -304,33 +311,39 @@ func processDataReport(data []byte) (float64, float64, bool, bool) {
 	return temp, 0, false, true
 }
 
-func searchDevice(ds *DeviceState, quit <-chan struct{}, silent bool) <-chan struct{} {
-	foundChan := make(chan struct{})
+func searchDevice(ds *DeviceState, quit <-chan struct{}, silent bool) bool {
+	for {
+		select {
+		case <-quit:
+			return false
+		default:
+		}
 
-	go func() {
-		for {
-			dev, err := findAndOpenDevice()
-			if err == nil {
-				ds.setDevice(dev)
-				log.Println("Устройство успешно открыто")
-				close(foundChan)
-				return
-			}
-
-			if !silent {
-				log.Println(err)
-				log.Println("Повторная попытка через 1 сек...")
-			}
-
+		dev, err := findAndOpenDevice()
+		if err == nil {
 			select {
 			case <-quit:
-				return
-			case <-time.After(1 * time.Second):
+				dev.Close()
+				return false
+			default:
 			}
-		}
-	}()
 
-	return foundChan
+			ds.setDevice(dev)
+			log.Println("Устройство успешно открыто")
+			return true
+		}
+
+		if !silent {
+			log.Println(err)
+			log.Println("Повторная попытка через 1 сек...")
+		}
+
+		select {
+		case <-quit:
+			return false
+		case <-time.After(time.Second):
+		}
+	}
 }
 
 func main() {
@@ -408,10 +421,7 @@ func main() {
 		}
 	}
 
-	devicePeriod := *periodPtr
-	if cloudClient != nil && cloudPeriodSeconds < devicePeriod {
-		devicePeriod = cloudPeriodSeconds
-	}
+	devicePeriod := deviceSamplePeriod(period, cloudPeriod, cloudClient != nil)
 
 	guiMode := !*cliPtr && guiSupported
 
@@ -464,13 +474,10 @@ func main() {
 	var hasLastSample bool
 	var tempMutex sync.Mutex
 
-	var sampleChans []chan SensorSample
-	var wg sync.WaitGroup
-
-	if *periodPtr >= 2 {
-		logPeriod := period
-		sampleChans = append(sampleChans, startPeriodicSampleRecorder(quit, ds, logPeriod, logSensorSample))
+	sampleChans := []chan SensorSample{
+		startPeriodicSampleRecorder(quit, ds, period, logSensorSample),
 	}
+	var wg sync.WaitGroup
 
 	if cloudClient != nil {
 		sampleChans = append(sampleChans, startPeriodicSampleRecorder(quit, ds, cloudPeriod, func(sample SensorSample) {
@@ -497,8 +504,6 @@ func main() {
 			})
 		}
 	}
-
-	deviceFoundChan := searchDevice(ds, quit, *silentPtr)
 
 	if guiMode && ui != nil {
 		wg.Add(1)
@@ -536,156 +541,143 @@ func main() {
 	go func() {
 		defer wg.Done()
 
-		select {
-		case <-deviceFoundChan:
-			log.Println("Запуск цикла чтения данных с устройства")
-			time.Sleep(500 * time.Millisecond)
+		if !searchDevice(ds, quit, *silentPtr) {
+			return
+		}
 
-			configureFastDeviceInterval(ds, devicePeriod)
+		log.Println("Запуск цикла чтения данных с устройства")
+		time.Sleep(500 * time.Millisecond)
+		configureFastDeviceInterval(ds, devicePeriod.Seconds())
 
-			replyTimeout := missedReadLimit
-			report := make([]byte, 64)
+		replyTimeout := missedReadLimit
+		report := make([]byte, 64)
 
-			reconnect := func(showStatus func()) bool {
-				if showStatus != nil {
-					showStatus()
-				}
-				deviceFoundChan = searchDevice(ds, quit, *silentPtr)
-
-				select {
-				case <-deviceFoundChan:
-					time.Sleep(500 * time.Millisecond)
-					configureFastDeviceInterval(ds, devicePeriod)
-					replyTimeout = missedReadLimit
-					return true
-				case <-quit:
-					return false
-				}
+		reconnect := func(showStatus func()) bool {
+			if showStatus != nil {
+				showStatus()
 			}
+			if !searchDevice(ds, quit, *silentPtr) {
+				return false
+			}
+			time.Sleep(500 * time.Millisecond)
+			configureFastDeviceInterval(ds, devicePeriod.Seconds())
+			replyTimeout = missedReadLimit
+			return true
+		}
 
-			for {
-				select {
-				case <-quit:
-					return
-				default:
-					dev, found := ds.getDevice()
-					if !found || dev == nil {
-						time.Sleep(100 * time.Millisecond)
+		for {
+			select {
+			case <-quit:
+				return
+			default:
+				dev, found := ds.getDevice()
+				if !found || dev == nil {
+					time.Sleep(100 * time.Millisecond)
+					continue
+				}
+
+				n, err := dev.ReadWithTimeout(report, readTimeout)
+				if errors.Is(err, hid.ErrTimeout) {
+					n = 0
+				} else if err != nil {
+					log.Printf("Ошибка чтения: %v\n", err)
+					ds.clearDevice()
+
+					var showStatus func()
+					if guiMode && ui != nil {
+						showStatus = ui.ShowDisconnected
+					}
+					if reconnect(showStatus) {
 						continue
 					}
+					return
+				}
 
-					n, err := dev.ReadWithTimeout(report, readTimeout)
-					if errors.Is(err, hid.ErrTimeout) {
-						n = 0
-					} else if err != nil {
-						log.Printf("Ошибка чтения: %v\n", err)
-						ds.clearDevice()
+				if n > 0 {
+					data := report[:n]
+					reportID := data[0]
 
-						var showStatus func()
-						if guiMode && ui != nil {
-							showStatus = ui.ShowDisconnected
-						}
-						if reconnect(showStatus) {
+					switch reportID {
+					case HID_DATA_REPORT_ID:
+						if len(data) < 3 {
 							continue
 						}
-						return
-					}
+						temp, humidity, hasHumidity, ok := processDataReport(data[1:])
+						if !ok {
+							continue
+						}
 
-					if n > 0 {
-						data := report[:n]
-						reportID := data[0]
+						nowSample := time.Now()
+						tempMutex.Lock()
+						lastTemp = temp
+						lastHumidity = humidity
+						lastHasHumidity = hasHumidity
+						lastGen = ds.getGeneration()
+						hasLastSample = true
+						tempMutex.Unlock()
 
-						switch reportID {
-						case HID_DATA_REPORT_ID:
-							if len(data) < 3 {
-								continue
+						sample := SensorSample{
+							Temperature: temp,
+							Humidity:    humidity,
+							HasHumidity: hasHumidity,
+							At:          nowSample,
+							Gen:         ds.getGeneration(),
+						}
+						for _, sampleChan := range sampleChans {
+							offerSample(sampleChan, sample)
+						}
+
+					case HID_EVENT_REPORT_ID:
+
+					case HID_FW_REPORT_ID:
+						if len(data) > 2 {
+							length := int(data[1])
+							if 2+length <= len(data) {
+								firmwareVersion := string(data[2 : 2+length])
+								log.Printf("[FW] Версия прошивки: %s\n", firmwareVersion)
 							}
-							temp, humidity, hasHumidity, ok := processDataReport(data[1:])
-							if !ok {
-								continue
-							}
+						}
 
-							nowSample := time.Now()
-							tempMutex.Lock()
-							lastTemp = temp
-							lastHumidity = humidity
-							lastHasHumidity = hasHumidity
-							lastGen = ds.getGeneration()
-							hasLastSample = true
-							tempMutex.Unlock()
+					case HID_CMD_REPORT_ID:
+						if len(data) > 1 {
+							cmd := data[1]
+							if cmd == HID_CMD_RST_DFU || cmd == HID_CMD_RST_UAPP || cmd == HID_CMD_RST_STM {
+								log.Println("Устройство переходит в режим сброса/DFU. Закрытие устройства.")
+								ds.clearDevice()
 
-							sample := SensorSample{
-								Temperature: temp,
-								Humidity:    humidity,
-								HasHumidity: hasHumidity,
-								At:          nowSample,
-								Gen:         ds.getGeneration(),
-							}
-							for _, sampleChan := range sampleChans {
-								offerSample(sampleChan, sample)
-							}
-
-							if *periodPtr < 2 {
-								logSensorSample(sample)
-							}
-
-						case HID_EVENT_REPORT_ID:
-
-						case HID_FW_REPORT_ID:
-							if len(data) > 2 {
-								length := int(data[1])
-								if 2+length <= len(data) {
-									firmwareVersion := string(data[2 : 2+length])
-									log.Printf("[FW] Версия прошивки: %s\n", firmwareVersion)
-								}
-							}
-
-						case HID_CMD_REPORT_ID:
-							if len(data) > 1 {
-								cmd := data[1]
-								if cmd == HID_CMD_RST_DFU || cmd == HID_CMD_RST_UAPP || cmd == HID_CMD_RST_STM {
-									log.Println("Устройство переходит в режим сброса/DFU. Закрытие устройства.")
-									ds.clearDevice()
-
-									if !guiMode {
-										closeQuit()
-										return
-									}
-									if reconnect(ui.ShowDisconnected) {
-										continue
-									}
+								if !guiMode {
+									closeQuit()
 									return
-								} else {
-									log.Printf("Получена команда 0x%X с данными: %X\n", cmd, data[2:])
 								}
+								if reconnect(ui.ShowDisconnected) {
+									continue
+								}
+								return
 							}
-
-						default:
-							log.Printf("Неизвестный report id: %d\n", reportID)
+							log.Printf("Получена команда 0x%X с данными: %X\n", cmd, data[2:])
 						}
 
-						replyTimeout = missedReadLimit
-					} else {
-						if replyTimeout > 0 {
-							replyTimeout--
-						} else {
-							log.Println("Устройство не отвечает – превышен таймаут")
-							ds.clearDevice()
-
-							var showStatus func()
-							if guiMode && ui != nil {
-								showStatus = ui.ShowConnectionLost
-							}
-							if reconnect(showStatus) {
-								continue
-							}
-							return
-						}
+					default:
+						log.Printf("Неизвестный report id: %d\n", reportID)
 					}
+
+					replyTimeout = missedReadLimit
+				} else if replyTimeout > 0 {
+					replyTimeout--
+				} else {
+					log.Println("Устройство не отвечает – превышен таймаут")
+					ds.clearDevice()
+
+					var showStatus func()
+					if guiMode && ui != nil {
+						showStatus = ui.ShowConnectionLost
+					}
+					if reconnect(showStatus) {
+						continue
+					}
+					return
 				}
 			}
-		case <-quit:
-			return
 		}
 	}()
 

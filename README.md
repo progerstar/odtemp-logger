@@ -57,9 +57,9 @@ make cli
 | `-cli` | Run without GUI |
 | `-path <dir>` | Log file directory |
 | `-silent` | Disable logging |
-| `-period <sec>` | Log interval in seconds (default: 60) |
+| `-period <sec>` | Log interval in seconds, minimum `0.001` (default: 60) |
 | `-cloud-token <write_token>` | Enable cloud-lite upload with write token |
-| `-cloud-period <sec>` | Cloud upload interval in seconds (default: 60) |
+| `-cloud-period <sec>` | Cloud upload interval in seconds, minimum `0.001` (default: 60) |
 | `-cloud-url <url>` | cloud-lite base URL (default: `https://cloud.unitx.pro`) |
 | `-cloud-device <id>` | cloud-lite device_id (default: `odtemp-1`) |
 | `-bootloader` | Switch device to bootloader mode and exit |
@@ -140,9 +140,9 @@ make cli
 | `-cli` | Запуск без GUI |
 | `-path <dir>` | Директория для лог-файлов |
 | `-silent` | Отключить логирование |
-| `-period <сек>` | Интервал записи в секундах (по умолчанию: 60) |
+| `-period <сек>` | Интервал записи в секундах, минимум `0,001` (по умолчанию: 60) |
 | `-cloud-token <write_token>` | Включить отправку в cloud-lite с write-токеном |
-| `-cloud-period <сек>` | Интервал отправки в cloud-lite в секундах (по умолчанию: 60) |
+| `-cloud-period <сек>` | Интервал отправки в cloud-lite в секундах, минимум `0,001` (по умолчанию: 60) |
 | `-cloud-url <url>` | Base URL cloud-lite (по умолчанию: `https://cloud.unitx.pro`) |
 | `-cloud-device <id>` | device_id в cloud-lite (по умолчанию: `odtemp-1`) |
 | `-bootloader` | Перевести устройство в загрузчик и выйти |

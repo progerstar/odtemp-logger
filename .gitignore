@@ -1,0 +1,10 @@
+# Артефакты сборки
+odtemp-logger
+odtemp-logger_*
+*.app
+*.exe
+*.tar.xz
+*.dmg
+
+# Логи приложения
+odtemp_*.log
