@@ -1,10 +1,29 @@
 package main
 
 import (
+	"bytes"
+	"encoding/binary"
+	"fmt"
 	"math"
 	"testing"
 	"time"
 )
+
+type fakeFeatureReportDevice struct {
+	report       []byte
+	reportLength int
+	sent         []byte
+}
+
+func (d *fakeFeatureReportDevice) GetFeatureReport(buf []byte) (int, error) {
+	copy(buf, d.report)
+	return d.reportLength, nil
+}
+
+func (d *fakeFeatureReportDevice) SendFeatureReport(buf []byte) (int, error) {
+	d.sent = append([]byte(nil), buf...)
+	return len(buf), nil
+}
 
 func TestProcessDataReport(t *testing.T) {
 	tests := []struct {
@@ -160,5 +179,48 @@ func TestDeviceIntervalMilliseconds(t *testing.T) {
 		if got := deviceIntervalMilliseconds(tt.period); got != tt.want {
 			t.Fatalf("deviceIntervalMilliseconds(%v) = %d, want %d", tt.period, got, tt.want)
 		}
+	}
+}
+
+func TestSetDeviceIntervalUsesActualFeatureReportLength(t *testing.T) {
+	report := make([]byte, 16)
+	report[0] = HID_CMD_REPORT_ID
+	binary.LittleEndian.PutUint32(report[1:5], 5000)
+	for i := 5; i < len(report); i++ {
+		report[i] = byte(i)
+	}
+
+	dev := &fakeFeatureReportDevice{
+		report:       report,
+		reportLength: len(report),
+	}
+	if err := setDeviceInterval(dev, 200); err != nil {
+		t.Fatalf("setDeviceInterval() error = %v", err)
+	}
+	if len(dev.sent) != len(report) {
+		t.Fatalf("sent report length = %d, want %d", len(dev.sent), len(report))
+	}
+	if got := binary.LittleEndian.Uint32(dev.sent[1:5]); got != 200 {
+		t.Fatalf("sent interval = %d, want 200", got)
+	}
+	if !bytes.Equal(dev.sent[5:], report[5:]) {
+		t.Fatalf("non-interval feature data changed: got %v, want %v", dev.sent[5:], report[5:])
+	}
+}
+
+func TestSetDeviceIntervalRejectsInvalidFeatureReportLength(t *testing.T) {
+	for _, reportLength := range []int{4, 65} {
+		t.Run(fmt.Sprintf("length_%d", reportLength), func(t *testing.T) {
+			dev := &fakeFeatureReportDevice{
+				report:       make([]byte, 64),
+				reportLength: reportLength,
+			}
+			if err := setDeviceInterval(dev, 200); err == nil {
+				t.Fatal("setDeviceInterval() expected error")
+			}
+			if dev.sent != nil {
+				t.Fatalf("unexpected feature report write: %v", dev.sent)
+			}
+		})
 	}
 }

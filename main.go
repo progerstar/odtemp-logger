@@ -32,7 +32,7 @@ const (
 	HID_CMD_RST_UAPP = 0xF0
 	HID_CMD_RST_DFU  = 0xF1
 	HID_CMD_RST_STM  = 0xFA
-	VERSION          = "1.5.1"
+	VERSION          = "1.6.0"
 
 	readTimeout      = time.Second
 	missedReadLimit  = 9
@@ -90,31 +90,49 @@ func (ds *DeviceState) getGeneration() uint64 {
 	return atomic.LoadUint64(&ds.connectionGeneration)
 }
 
-func setDeviceInterval(dev *hid.Device, newInterval uint32) error {
+type featureReportDevice interface {
+	GetFeatureReport([]byte) (int, error)
+	SendFeatureReport([]byte) (int, error)
+}
+
+func validateIntervalFeatureReportLength(length, capacity int) error {
+	if length < 5 || length > capacity {
+		return fmt.Errorf("некорректная длина feature report: %d", length)
+	}
+	return nil
+}
+
+func setDeviceInterval(dev featureReportDevice, newInterval uint32) error {
 	featureBuf := make([]byte, 64)
 	featureBuf[0] = HID_CMD_REPORT_ID
 
-	_, err := dev.GetFeatureReport(featureBuf)
+	reportLength, err := dev.GetFeatureReport(featureBuf)
 	if err != nil {
 		return fmt.Errorf("ошибка при чтении feature report: %w", err)
+	}
+	if err := validateIntervalFeatureReportLength(reportLength, len(featureBuf)); err != nil {
+		return err
 	}
 
 	binary.LittleEndian.PutUint32(featureBuf[1:5], newInterval)
 
-	_, err = dev.SendFeatureReport(featureBuf)
+	_, err = dev.SendFeatureReport(featureBuf[:reportLength])
 	if err != nil {
 		return fmt.Errorf("ошибка при записи feature report: %w", err)
 	}
 	return nil
 }
 
-func getDeviceInterval(dev *hid.Device) (uint32, error) {
+func getDeviceInterval(dev featureReportDevice) (uint32, error) {
 	featureBuf := make([]byte, 64)
 	featureBuf[0] = HID_CMD_REPORT_ID
 
-	_, err := dev.GetFeatureReport(featureBuf)
+	reportLength, err := dev.GetFeatureReport(featureBuf)
 	if err != nil {
 		return 0, fmt.Errorf("ошибка при чтении feature report: %w", err)
+	}
+	if err := validateIntervalFeatureReportLength(reportLength, len(featureBuf)); err != nil {
+		return 0, err
 	}
 
 	interval := binary.LittleEndian.Uint32(featureBuf[1:5])
