@@ -357,3 +357,4 @@ jobs:
               --verify-tag \
               --generate-notes \
               --title "ODTemp Logger $APP_VERSION"
+          fi
