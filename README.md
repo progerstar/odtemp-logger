@@ -15,7 +15,7 @@ Temperature and humidity monitoring application for USB sensor ODTEMP-1.
 ## Requirements
 
 - USB temperature/humidity sensor ODTEMP-1
-- Go 1.23+ (for building)
+- Go 1.27.1+ (for building)
 
 ## Building
 
@@ -35,6 +35,27 @@ make run
 # suitable for headless servers; always runs in console mode
 make cli
 ```
+
+### Release packages
+
+The scripts in `scripts/` create ready-to-distribute packages and `.sha256`
+files:
+
+```bash
+# Linux: an AppImage for the current architecture; appimagetool is required
+./scripts/package-linux.sh
+
+# Windows x86-64 (PowerShell and MinGW-w64)
+pwsh -File ./scripts/package-windows.ps1
+
+# macOS 12+: a universal DMG for Intel and Apple Silicon
+./scripts/package-macos.sh
+```
+
+The `odtemp-logger-packages` workflow tests branches and pull requests. A tag
+that exactly matches the application version, such as `v1.6.0`, publishes one
+GitHub Release containing the AppImage, Windows ZIP, universal DMG, and
+checksums. GitHub Actions uses the Go version declared in `go.mod`.
 
 ## Usage
 
@@ -99,7 +120,7 @@ ODTEMP_CLOUD_TOKEN=utx1_... ./odtemp-logger -cli -cloud-period 60 -cloud-device 
 ## Требования
 
 - USB датчик ODTEMP-1
-- Go 1.23+ (для сборки)
+- Go 1.27.1+ (для сборки)
 
 
 ## Сборка
@@ -118,6 +139,26 @@ make run
 # подходит для headless-серверов; всегда работает в консольном режиме
 make cli
 ```
+
+### Пакеты для выпуска
+
+Скрипты в `scripts/` создают готовые пакеты и файлы `.sha256`:
+
+```bash
+# Linux: AppImage текущей архитектуры; нужен appimagetool
+./scripts/package-linux.sh
+
+# Windows x86-64 (PowerShell и MinGW-w64)
+pwsh -File ./scripts/package-windows.ps1
+
+# macOS 12+: универсальный DMG для Intel и Apple Silicon
+./scripts/package-macos.sh
+```
+
+Workflow `odtemp-logger-packages` проверяет ветки и pull request. Тег, точно
+совпадающий с версией приложения, например `v1.6.0`, публикует один GitHub
+Release с AppImage, Windows ZIP, универсальным DMG и контрольными суммами.
+GitHub Actions использует версию Go из `go.mod`.
 
 ## Использование
 

@@ -1,6 +1,6 @@
 module odtemp-logger
 
-go 1.23.4
+go 1.27.1
 
 require (
 	fyne.io/fyne/v2 v2.6.3

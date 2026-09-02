@@ -6,5 +6,11 @@ odtemp-logger_*
 *.tar.xz
 *.dmg
 
+# Release packaging
+/build/
+/dist/linux/
+/dist/windows/
+/dist/macos/
+
 # Логи приложения
 odtemp_*.log
